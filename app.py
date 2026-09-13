@@ -1135,19 +1135,16 @@ def example_line_map_for(section, entry):
 def list_line(section, entry):
     """One-line results-list text for an entry of any section.
 
-    Command rows always start with a uniform 2-character gutter
-    ("⚠ " for dangerous commands, two spaces otherwise) so the name
-    field — and therefore the description column — starts at the
-    same character offset for every row.
+    Command rows show the name and description with no marker
+    glyphs, so every row aligns identically.
     """
     if section == SECTION_BASICS:
         return "{:<14}  {}".format(
             entry.get("term", ""), entry.get("title", ""))
     if section == SECTION_ERRORS:
         return entry.get("error", "")
-    prefix = "⚠ " if entry.get("warning") else "  "
-    return "{}{:<22}  {}".format(
-        prefix, entry.get("name", ""), entry.get("description", ""))
+    return "{:<22}  {}".format(
+        entry.get("name", ""), entry.get("description", ""))
 
 
 def section_search(section, query):
@@ -1271,7 +1268,8 @@ def main():
 
     left = make_frame(middle, padding=0)
     left.pack(side="left", fill="both", expand=True, padx=(0, 8))
-    results = tk.Listbox(left, font=mono_font, height=20)
+    results = tk.Listbox(left, font=mono_font, height=20,
+                         activestyle="none")
     results.pack(side="left", fill="both", expand=True)
     results_scroll = tk.Scrollbar(left, orient="vertical",
                                   command=results.yview)
@@ -1281,7 +1279,7 @@ def main():
     right = make_frame(middle, padding=0)
     right.pack(side="left", fill="both", expand=True)
     details = tk.Text(right, font=base_font, wrap="word", height=20,
-                      width=45, state="disabled")
+                      width=45, state="disabled", padx=14, pady=10)
     details.pack(side="left", fill="both", expand=True)
     details_scroll = tk.Scrollbar(right, orient="vertical",
                                   command=details.yview)
@@ -1289,27 +1287,42 @@ def main():
     details.configure(yscrollcommand=details_scroll.set)
     details.tag_config("title", font=("Segoe UI", 13, "bold"))
     details.tag_config("body", font=("Segoe UI", 10))
-    # Example blocks share one indent (first and wrapped lines alike)
-    # so each command + explanation pair reads as a single block.
+    # Example command lines look interactive (blue, no underline) and share
+    # one indent (first and wrapped lines alike) so each command +
+    # explanation pair reads as a single block.
     details.tag_config("cmd", font=("Consolas", 10),
+                       foreground="#1a5fb4",
+                       lmargin1=20, lmargin2=20, spacing1=4)
+    # Visited example lines: same geometry as "cmd", only the
+    # foreground differs (canonical browser visited purple #551a8b).
+    details.tag_config("cmd-visited", font=("Consolas", 10),
+                       foreground="#551a8b",
                        lmargin1=20, lmargin2=20, spacing1=4)
     details.tag_config("note", font=("Segoe UI", 9, "italic"),
                        lmargin1=20, lmargin2=20)
     details.tag_config("warn", font=("Segoe UI", 10, "bold"),
                        foreground="red")
 
-    # --- Status line ---
+    # --- Status bar: counter left, copy feedback bottom-right ---
     status_var = tk.StringVar(value="")
-    status = make_label(root, textvariable=status_var, font=base_font)
-    status.pack(fill="x", padx=10, pady=(0, 8), anchor="w")
-
-    copy_hint = make_label(root,
+    copy_var = tk.StringVar(value="")
+    status_bar = make_frame(root, padding=0)
+    status_bar.pack(fill="x", padx=10, pady=(0, 8))
+    status = make_label(status_bar, textvariable=status_var,
+                        font=base_font)
+    status.pack(side="left", anchor="w")
+    copy_hint = make_label(status_bar,
                            text="Клик по примеру — скопировать в буфер",
-                           font=("Segoe UI", 8))
-    copy_hint.pack(anchor="w", padx=10, pady=(0, 8))
+                           font=("Segoe UI", 8), foreground="gray")
+    copy_hint.pack(side="left", anchor="w", padx=(12, 0))
+    copy_status = make_label(status_bar, textvariable=copy_var,
+                             font=base_font)
+    copy_status.pack(side="right", anchor="e")
 
     current = {"items": list(COMMANDS), "section": SECTION_COMMANDS}
     copy_map = {}  # Text line number (1-based) -> copyable example command
+    copy_after = {"id": None}  # pending status-revert timer, if any
+    last_copied = {"value": None}  # most recently copied example command
 
     try:
         from tkinter import font as tkfont
@@ -1353,32 +1366,9 @@ def main():
         return text[:low] + ellipsis
 
     def display_line(section, entry):
-        """Full list_line() text, pixel-aligned and fitted to width.
-
-        The "⚠ " marker glyph may be wider/narrower than two plain
-        spaces in the fallback font, so pad the gap after the name
-        field to keep the description column pixel-aligned; then
-        truncate with an ellipsis to the visible width.
-        """
-        full = list_line(section, entry)
-        if section == SECTION_COMMANDS and list_font is not None:
-            try:
-                space_w = list_font.measure(" ")
-                if space_w > 0:
-                    diff = (list_font.measure("⚠ ") -
-                            list_font.measure("  "))
-                    extra = int(round(diff / space_w))
-                    name = "{:<22}".format(entry.get("name", ""))
-                    desc = entry.get("description", "")
-                    if entry.get("warning") and extra < 0:
-                        full = ("⚠ " + name + "  " +
-                                " " * (-extra) + desc)
-                    elif not entry.get("warning") and extra > 0:
-                        full = ("  " + name + "  " +
-                                " " * extra + desc)
-            except Exception:
-                pass
-        return fit_line(full)
+        """Full list_line() text, fitted to the visible list width
+        with an ellipsis."""
+        return fit_line(list_line(section, entry))
 
     def insert_all():
         results.delete(0, "end")
@@ -1418,6 +1408,9 @@ def main():
             section = current["section"]
             copy_map.update(example_line_map_for(section, entry))
             for text, tag in detail_blocks_for(section, entry):
+                if tag == "cmd" and last_copied["value"] and \
+                        text.strip() == last_copied["value"]:
+                    tag = "cmd-visited"
                 details.insert("end", text + "\n", tag)
         details.configure(state="disabled")
 
@@ -1436,7 +1429,70 @@ def main():
             root.clipboard_append(cmd_text)
         except Exception:
             pass
-        status_var.set("Скопировано: {}".format(cmd_text))
+        # Only the most recently copied line stays purple: retag the
+        # copyable lines so exactly one keeps "cmd-visited". Non-copyable
+        # lines (copy_map value None) are skipped: tagging them "cmd"
+        # would repaint the whole block blue. The copy map is untouched
+        # so re-clicking copies identically.
+        last_copied["value"] = cmd_text
+        try:
+            details.configure(state="normal")
+            for map_lineno, map_cmd in copy_map.items():
+                if not map_cmd:
+                    continue
+                start = "{}.0".format(map_lineno)
+                end = "{}.end".format(map_lineno)
+                details.tag_remove("cmd", start, end)
+                details.tag_remove("cmd-visited", start, end)
+                details.tag_add(
+                    "cmd-visited" if map_cmd == cmd_text else "cmd",
+                    start, end)
+        except Exception:
+            pass
+        finally:
+            details.configure(state="disabled")
+        copy_var.set("Скопировано: {}".format(cmd_text))
+        # Hide the inline hint while the copy feedback is visible so
+        # the two never overlap at 1040px width; the revert timer
+        # below brings the hint back.
+        try:
+            copy_hint.pack_forget()
+        except Exception:
+            pass
+        # Revert the status line back to the counter shortly after,
+        # so the feedback is visible but the counter is not lost.
+        if copy_after["id"] is not None:
+            try:
+                root.after_cancel(copy_after["id"])
+            except Exception:
+                pass
+            copy_after["id"] = None
+
+        def _revert_status():
+            copy_after["id"] = None
+            copy_var.set("")
+            try:
+                copy_hint.pack(side="left", anchor="w", padx=(12, 0))
+            except Exception:
+                pass
+
+        try:
+            copy_after["id"] = root.after(2500, _revert_status)
+        except Exception:
+            pass
+
+    def on_details_motion(event):
+        # Hand cursor over copyable example command lines only.
+        try:
+            lineno = int(details.index(
+                "@{},{}".format(event.x, event.y)).split(".")[0])
+        except Exception:
+            return
+        try:
+            details.configure(
+                cursor="hand2" if copy_map.get(lineno) else "")
+        except Exception:
+            pass
 
     def move_selection(delta):
         items = current["items"]
@@ -1490,16 +1546,35 @@ def main():
         set_section_widgets(section_var.get())
         refresh()
 
+    # Section labels use an explicitly non-underlined font so none of
+    # the three radio labels render underlined on any theme.
+    section_style = None
+    if have_ttk:
+        try:
+            section_font = tkfont.Font(family="Segoe UI", size=10,
+                                       weight="normal", underline=0)
+            style.configure("Section.TRadiobutton", font=section_font)
+            section_style = "Section.TRadiobutton"
+        except Exception:
+            section_style = None
+
     for value, label in SECTIONS:
-        make_radio(switcher, text=label, variable=section_var,
-                   value=value, command=on_section_change).pack(
-                       side="left", padx=(0, 12))
+        radio_kw = dict(text=label, variable=section_var,
+                        value=value, command=on_section_change)
+        if section_style is not None:
+            radio_kw["style"] = section_style
+        if not have_ttk:
+            radio_kw["underline"] = -1
+            radio_kw["font"] = base_font
+        make_radio(switcher, **radio_kw).pack(
+            side="left", padx=(0, 12))
 
     search_entry.bind("<KeyRelease>", lambda _e: refresh())
     search_entry.bind("<Escape>", on_escape)
     search_entry.bind("<Up>", on_up)
     search_entry.bind("<Down>", on_down)
     details.bind("<Button-1>", on_details_click)
+    details.bind("<Motion>", on_details_motion)
     results.bind("<<ListboxSelect>>", on_select)
 
     resize_after = {"id": None}
