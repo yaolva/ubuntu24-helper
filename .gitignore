@@ -1,0 +1,14 @@
+AGENTS.md
+MAP.md
+LOG.md
+LOG-ARCHIVE.md
+__pycache__/
+*.pyc
+*.key
+*.pem
+id_rsa*
+id_ed25519*
+.env
+.DS_Store
+Thumbs.db
+opencode.json
