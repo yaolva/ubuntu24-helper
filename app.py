@@ -8,7 +8,7 @@ stays importable headless for search tests.
 APP_TITLE = "ubuntu24-helper"
 ALL_CATEGORIES_LABEL = "Все"
 WINDOW_GEOMETRY = "1040x700"
-SEARCH_PROMPT = "Поиск (например: созд, удалить, сеть)..."
+SEARCH_PROMPT = "например: созд, удалить"
 
 # Each entry: name, category, description (short Russian), details
 # (longer plain-Russian explanation), examples (list of (command, note)
@@ -1020,9 +1020,9 @@ def detail_blocks(cmd):
         blocks.append(("", "body"))
         blocks.append(("Примеры:", "body"))
         for example_cmd, note in examples:
-            blocks.append(("  " + example_cmd, "cmd"))
+            blocks.append((example_cmd, "cmd"))
             if note:
-                blocks.append(("  " + note, "note"))
+                blocks.append((note, "note"))
     warning = cmd.get("warning", "")
     if warning:
         blocks.append(("", "body"))
@@ -1072,9 +1072,9 @@ def basic_blocks(entry):
         blocks.append(("", "body"))
         blocks.append(("Примеры:", "body"))
         for example_cmd, note in examples:
-            blocks.append(("  " + example_cmd, "cmd"))
+            blocks.append((example_cmd, "cmd"))
             if note:
-                blocks.append(("  " + note, "note"))
+                blocks.append((note, "note"))
     return blocks
 
 
@@ -1102,7 +1102,7 @@ def error_blocks(entry):
         blocks.append(("", "body"))
         blocks.append(("Команды:", "body"))
         for fix_cmd in commands:
-            blocks.append(("  " + fix_cmd, "cmd"))
+            blocks.append((fix_cmd, "cmd"))
     return blocks
 
 
@@ -1133,15 +1133,21 @@ def example_line_map_for(section, entry):
 
 
 def list_line(section, entry):
-    """One-line results-list text for an entry of any section."""
+    """One-line results-list text for an entry of any section.
+
+    Command rows always start with a uniform 2-character gutter
+    ("⚠ " for dangerous commands, two spaces otherwise) so the name
+    field — and therefore the description column — starts at the
+    same character offset for every row.
+    """
     if section == SECTION_BASICS:
         return "{:<14}  {}".format(
             entry.get("term", ""), entry.get("title", ""))
     if section == SECTION_ERRORS:
         return entry.get("error", "")
-    mark = "⚠ " if entry.get("warning") else ""
+    prefix = "⚠ " if entry.get("warning") else "  "
     return "{}{:<22}  {}".format(
-        mark, entry.get("name", ""), entry.get("description", ""))
+        prefix, entry.get("name", ""), entry.get("description", ""))
 
 
 def section_search(section, query):
@@ -1176,6 +1182,7 @@ def main():
     root = tk.Tk()
     root.title(APP_TITLE)
     root.geometry(WINDOW_GEOMETRY)
+    root.minsize(760, 520)
 
     base_font = ("Segoe UI", 10)
     title_font = ("Segoe UI", 12, "bold")
@@ -1221,6 +1228,11 @@ def main():
             return ttk.Radiobutton(parent, **kw)
         return tk.Radiobutton(parent, **kw)
 
+    # --- App header (top) ---
+    header = make_label(root, text="Ubuntu 24 — справочник команд",
+                        font=title_font)
+    header.pack(anchor="w", padx=10, pady=(6, 0))
+
     # --- Section switcher: commands | basics | errors ---
     section_var = tk.StringVar(value=SECTION_COMMANDS)
     switcher = make_frame(root, padding=(10, 4))
@@ -1250,20 +1262,39 @@ def main():
         cat_menu.pack(side="left")
         cat_widgets.append(cat_menu)
 
-    # --- Middle: results list + details ---
+    hint = make_label(top, text=SEARCH_PROMPT, font=("Segoe UI", 8))
+    hint.pack(side="left", padx=(8, 0))
+
+    # --- Middle: results list + details (each with a scrollbar) ---
     middle = make_frame(root, padding=10)
     middle.pack(fill="both", expand=True)
 
-    results = tk.Listbox(middle, font=mono_font, height=20)
-    results.pack(side="left", fill="both", expand=True, padx=(0, 8))
+    left = make_frame(middle, padding=0)
+    left.pack(side="left", fill="both", expand=True, padx=(0, 8))
+    results = tk.Listbox(left, font=mono_font, height=20)
+    results.pack(side="left", fill="both", expand=True)
+    results_scroll = tk.Scrollbar(left, orient="vertical",
+                                  command=results.yview)
+    results_scroll.pack(side="right", fill="y")
+    results.configure(yscrollcommand=results_scroll.set)
 
-    details = tk.Text(middle, font=base_font, wrap="word", height=20,
+    right = make_frame(middle, padding=0)
+    right.pack(side="left", fill="both", expand=True)
+    details = tk.Text(right, font=base_font, wrap="word", height=20,
                       width=45, state="disabled")
     details.pack(side="left", fill="both", expand=True)
+    details_scroll = tk.Scrollbar(right, orient="vertical",
+                                  command=details.yview)
+    details_scroll.pack(side="right", fill="y")
+    details.configure(yscrollcommand=details_scroll.set)
     details.tag_config("title", font=("Segoe UI", 13, "bold"))
     details.tag_config("body", font=("Segoe UI", 10))
-    details.tag_config("cmd", font=("Consolas", 10))
-    details.tag_config("note", font=("Segoe UI", 9, "italic"))
+    # Example blocks share one indent (first and wrapped lines alike)
+    # so each command + explanation pair reads as a single block.
+    details.tag_config("cmd", font=("Consolas", 10),
+                       lmargin1=20, lmargin2=20, spacing1=4)
+    details.tag_config("note", font=("Segoe UI", 9, "italic"),
+                       lmargin1=20, lmargin2=20)
     details.tag_config("warn", font=("Segoe UI", 10, "bold"),
                        foreground="red")
 
@@ -1280,6 +1311,81 @@ def main():
     current = {"items": list(COMMANDS), "section": SECTION_COMMANDS}
     copy_map = {}  # Text line number (1-based) -> copyable example command
 
+    try:
+        from tkinter import font as tkfont
+        list_font = tkfont.Font(font=results.cget("font"))
+    except Exception:
+        list_font = None
+
+    def list_inner_width():
+        """Current visible pixel width of the results listbox."""
+        try:
+            return max(0, results.winfo_width() - 6)
+        except Exception:
+            return 0
+
+    def fit_line(text):
+        """Truncate a list line with "…" to the visible list width."""
+        if list_font is None:
+            return text
+        avail = list_inner_width()
+        if avail <= 0:
+            return text
+        try:
+            if list_font.measure(text) <= avail:
+                return text
+        except Exception:
+            return text
+        ellipsis = "…"
+        low, high = 0, len(text)
+        while low < high:
+            mid = (low + high + 1) // 2
+            try:
+                width = list_font.measure(text[:mid] + ellipsis)
+            except Exception:
+                break
+            if width <= avail:
+                low = mid
+            else:
+                high = mid - 1
+        if low <= 1:
+            return ellipsis
+        return text[:low] + ellipsis
+
+    def display_line(section, entry):
+        """Full list_line() text, pixel-aligned and fitted to width.
+
+        The "⚠ " marker glyph may be wider/narrower than two plain
+        spaces in the fallback font, so pad the gap after the name
+        field to keep the description column pixel-aligned; then
+        truncate with an ellipsis to the visible width.
+        """
+        full = list_line(section, entry)
+        if section == SECTION_COMMANDS and list_font is not None:
+            try:
+                space_w = list_font.measure(" ")
+                if space_w > 0:
+                    diff = (list_font.measure("⚠ ") -
+                            list_font.measure("  "))
+                    extra = int(round(diff / space_w))
+                    name = "{:<22}".format(entry.get("name", ""))
+                    desc = entry.get("description", "")
+                    if entry.get("warning") and extra < 0:
+                        full = ("⚠ " + name + "  " +
+                                " " * (-extra) + desc)
+                    elif not entry.get("warning") and extra > 0:
+                        full = ("  " + name + "  " +
+                                " " * extra + desc)
+            except Exception:
+                pass
+        return fit_line(full)
+
+    def insert_all():
+        results.delete(0, "end")
+        for entry in current["items"]:
+            results.insert("end",
+                           display_line(current["section"], entry))
+
     def refresh():
         section = section_var.get()
         if section not in (SECTION_COMMANDS, SECTION_BASICS,
@@ -1293,9 +1399,7 @@ def main():
                 items = [c for c in items if c.get("category") == cat]
         current["items"] = items
         current["section"] = section
-        results.delete(0, "end")
-        for entry in items:
-            results.insert("end", list_line(section, entry))
+        insert_all()
         if items:
             results.selection_set(0)
             show_details(items[0])
@@ -1397,17 +1501,38 @@ def main():
     search_entry.bind("<Down>", on_down)
     details.bind("<Button-1>", on_details_click)
     results.bind("<<ListboxSelect>>", on_select)
+
+    resize_after = {"id": None}
+
+    def on_list_resize(_event=None):
+        # Re-fit list lines with ellipsis to the new width (debounced).
+        if resize_after["id"] is not None:
+            try:
+                root.after_cancel(resize_after["id"])
+            except Exception:
+                pass
+            resize_after["id"] = None
+
+        def _refit():
+            resize_after["id"] = None
+            sel = results.curselection()
+            keep = sel[0] if sel else None
+            insert_all()
+            if keep is not None and current["items"]:
+                idx = max(0, min(len(current["items"]) - 1, keep))
+                results.selection_set(idx)
+                try:
+                    results.activate(idx)
+                except Exception:
+                    pass
+
+        resize_after["id"] = root.after(120, _refit)
+
+    results.bind("<Configure>", on_list_resize)
     if have_ttk:
         cat_combo.bind("<<ComboboxSelected>>", on_category_change)
     else:
         cat_var.trace_add("write", lambda *_a: refresh())
-
-    hint = make_label(top, text=SEARCH_PROMPT, font=("Segoe UI", 8))
-    hint.pack(side="left", padx=(8, 0))
-
-    header = make_label(root, text="Ubuntu 24 — справочник команд",
-                        font=title_font)
-    header.pack(anchor="w", padx=10, pady=(0, 2))
 
     refresh()
     root.mainloop()
